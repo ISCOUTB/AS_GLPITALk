@@ -1,0 +1,16 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno (contiene tokens sensibles)
+.env
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

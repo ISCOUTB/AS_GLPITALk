@@ -1,0 +1,90 @@
+services:
+  # ── Base de datos MariaDB para GLPI ────────────────────────
+  mariadb:
+    image: mariadb:10.11
+    container_name: glpi-mariadb
+    restart: always
+    env_file:
+      - .mariadb.env
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - glpi-network
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── GLPI Aplicación Existente ──────────────────────────────
+  glpi:
+    image: glpi/glpi:latest
+    container_name: glpi-app
+    restart: always
+    ports:
+      - "8080:80"
+    environment:
+      - GLPI_DB_HOST=mariadb
+      - GLPI_DB_PORT=3306
+      - GLPI_DB_USER=glpi_user
+      - GLPI_DB_PASSWORD=glpi_password_segura
+      - GLPI_DB_NAME=glpidb
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - glpi_data:/var/glpi
+    networks:
+      - glpi-network
+
+  # ── Cache y Sesiones ───────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: glpi-ai-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - glpi-network
+
+  # ── Motor IA (FastAPI) ─────────────────────────────────────
+  fastapi-ai:
+    build: 
+      context: ../apps/fastapi-ai
+    container_name: glpi-ai-fastapi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../apps/fastapi-ai:/app
+    networks:
+      - glpi-network
+
+  # ── API Gateway (NestJS) ───────────────────────────────────
+  nestjs-gateway:
+    build: 
+      context: ../apps/nestjs-gateway
+    container_name: glpi-ai-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../apps/nestjs-gateway:/usr/src/app
+      - /usr/src/app/node_modules
+    networks:
+      - glpi-network
+    depends_on:
+      - redis
+      - fastapi-ai
+
+volumes:
+  mariadb_data:
+  glpi_data:
+  redis_data:
+
+networks:
+  glpi-network:
+    driver: bridge
