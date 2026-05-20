@@ -18,6 +18,19 @@ except ValueError as e:
 class ProcessRequest(BaseModel):
     message: str
     phone_number: str
+    debug: bool = False
+
+
+class GroqRequest(BaseModel):
+    message: str
+    context: dict = None
+
+
+class DbQueryRequest(BaseModel):
+    message: str
+    phone_number: str = None
+    debug: bool = False
+
 
 @app.get("/health")
 def health_check():
@@ -48,7 +61,7 @@ def process_message(request: ProcessRequest):
     
     try:
         # Procesar mensaje con análisis completo
-        result = analyzer.process(request.message, request.phone_number)
+        result = analyzer.process(request.message, request.phone_number, debug=request.debug)
         return result
     except Exception as e:
         print(f"Error procesando mensaje: {e}")
@@ -59,3 +72,27 @@ def process_message(request: ProcessRequest):
             "needs_confirmation": False,
             "error": str(e)
         }
+
+
+@app.post("/ai/groq")
+def groq_proxy(request: GroqRequest):
+    """Proxy sencillo para interrogar a Groq directamente desde consola.
+
+    Retorna tanto el análisis (`analyze_message`) como la respuesta generada
+    (`generate_response`).
+    """
+    if analyzer is None:
+        return {
+            "error": "Groq no está configurado. Establece GROQ_API_KEY en el entorno." 
+        }
+
+    try:
+        analysis = analyzer.groq.analyze_message(request.message)
+        generated = analyzer.groq.generate_response(request.message, request.context)
+        return {
+            "analysis": analysis,
+            "generated_response": generated
+        }
+    except Exception as e:
+        print(f"Error en proxy Groq: {e}")
+        return {"error": str(e)}

@@ -48,28 +48,32 @@ class GLPIConnector:
                 self.connect()
             
             with self.connection.cursor() as cursor:
-                # Buscar usuario por teléfono
+                # Buscar todos los usuarios asociados al teléfono
                 query = """
-                    SELECT u.id, u.name, u.phone FROM glpi_users u 
-                    WHERE u.phone LIKE %s LIMIT 1
+                    SELECT u.id FROM glpi_users u
+                    WHERE u.phone LIKE %s OR u.phone2 LIKE %s OR u.mobile LIKE %s
                 """
-                cursor.execute(query, (f"%{phone_number}%",))
-                user = cursor.fetchone()
-                
-                if not user:
+                cursor.execute(query, (f"%{phone_number}%", f"%{phone_number}%", f"%{phone_number}%"))
+                users = cursor.fetchall()
+
+                if not users:
                     return []
-                
-                user_id = user['id']
+
+                user_ids = [user['id'] for user in users]
+                placeholders = ", ".join(["%s"] * len(user_ids))
+                user_ids_tuple = tuple(user_ids)
                 
                 # Obtener tickets del usuario
                 tickets_query = """
-                    SELECT t.id, t.name, t.status, t.date_creation, t.due_date
+                    SELECT t.id, t.name, t.status, t.date_creation
                     FROM glpi_tickets t
-                    WHERE t.users_id_requester = %s
+                    JOIN glpi_tickets_users tu ON tu.tickets_id = t.id
+                    WHERE tu.users_id IN (%s) AND tu.type = 1
                     ORDER BY t.date_creation DESC
                     LIMIT 10
                 """
-                cursor.execute(tickets_query, (user_id,))
+                query = tickets_query.replace('(%s)', f'({placeholders})')
+                cursor.execute(query, user_ids_tuple)
                 tickets = cursor.fetchall()
                 
                 return tickets
@@ -85,10 +89,11 @@ class GLPIConnector:
             
             with self.connection.cursor() as cursor:
                 query = """
-                    SELECT t.id, t.name, t.status, t.date_creation, t.due_date,
+                    SELECT t.id, t.name, t.status, t.date_creation,
                            t.content, u.name as requester_name
                     FROM glpi_tickets t
-                    LEFT JOIN glpi_users u ON t.users_id_requester = u.id
+                    LEFT JOIN glpi_tickets_users tu ON tu.tickets_id = t.id AND tu.type = 1
+                    LEFT JOIN glpi_users u ON tu.users_id = u.id
                     WHERE t.id = %s
                 """
                 cursor.execute(query, (ticket_id,))
@@ -105,8 +110,8 @@ class GLPIConnector:
             
             with self.connection.cursor() as cursor:
                 # Buscar usuario
-                query = "SELECT id FROM glpi_users WHERE phone LIKE %s LIMIT 1"
-                cursor.execute(query, (f"%{phone_number}%",))
+                query = "SELECT id FROM glpi_users WHERE phone LIKE %s OR phone2 LIKE %s OR mobile LIKE %s LIMIT 1"
+                cursor.execute(query, (f"%{phone_number}%", f"%{phone_number}%", f"%{phone_number}%"))
                 user = cursor.fetchone()
                 
                 if not user:
@@ -115,13 +120,17 @@ class GLPIConnector:
                 # Crear ticket
                 insert_query = """
                     INSERT INTO glpi_tickets 
-                    (name, content, users_id_requester, status, date_creation)
-                    VALUES (%s, %s, %s, 1, NOW())
+                    (name, content, status, date_creation)
+                    VALUES (%s, %s, 1, NOW())
                 """
-                cursor.execute(insert_query, (title, description, user['id']))
+                cursor.execute(insert_query, (title, description))
+                ticket_id = cursor.lastrowid
+                cursor.execute(
+                    "INSERT INTO glpi_tickets_users (tickets_id, users_id, type, use_notification) VALUES (%s, %s, 1, 1)",
+                    (ticket_id, user['id'])
+                )
                 self.connection.commit()
-                
-                return cursor.lastrowid
+                return ticket_id
         except Exception as e:
             print(f"Error al crear ticket: {e}")
             return None
@@ -133,27 +142,36 @@ class GLPIConnector:
                 self.connect()
             
             with self.connection.cursor() as cursor:
-                # Buscar usuario
-                query = "SELECT id FROM glpi_users WHERE phone LIKE %s LIMIT 1"
-                cursor.execute(query, (f"%{phone_number}%",))
-                user = cursor.fetchone()
-                
-                if not user:
+                # Buscar todos los usuarios asociados al teléfono
+                query = """
+                    SELECT u.id FROM glpi_users u
+                    WHERE u.phone LIKE %s OR u.phone2 LIKE %s OR u.mobile LIKE %s
+                """
+                cursor.execute(query, (f"%{phone_number}%", f"%{phone_number}%", f"%{phone_number}%"))
+                users = cursor.fetchall()
+
+                if not users:
                     return {}
-                
-                # Contar tickets por estado
+
+                user_ids = [user['id'] for user in users]
+                placeholders = ", ".join(["%s"] * len(user_ids))
+                user_ids_tuple = tuple(user_ids)
+
+                # Contar tickets por estado (para todos los user IDs encontrados)
                 summary_query = """
                     SELECT 
-                        SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as new,
-                        SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) as assigned,
-                        SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) as planned,
-                        SUM(CASE WHEN status = 4 THEN 1 ELSE 0 END) as waiting,
-                        SUM(CASE WHEN status = 5 THEN 1 ELSE 0 END) as solved,
-                        SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) as closed
-                    FROM glpi_tickets
-                    WHERE users_id_requester = %s
+                        SUM(CASE WHEN t.status = 1 THEN 1 ELSE 0 END) as new,
+                        SUM(CASE WHEN t.status = 2 THEN 1 ELSE 0 END) as assigned,
+                        SUM(CASE WHEN t.status = 3 THEN 1 ELSE 0 END) as planned,
+                        SUM(CASE WHEN t.status = 4 THEN 1 ELSE 0 END) as waiting,
+                        SUM(CASE WHEN t.status = 5 THEN 1 ELSE 0 END) as solved,
+                        SUM(CASE WHEN t.status = 6 THEN 1 ELSE 0 END) as closed
+                    FROM glpi_tickets t
+                    JOIN glpi_tickets_users tu ON tu.tickets_id = t.id AND tu.type = 1
+                    WHERE tu.users_id IN (%s)
                 """
-                cursor.execute(summary_query, (user['id'],))
+                query = summary_query.replace('(%s)', f'({placeholders})')
+                cursor.execute(query, user_ids_tuple)
                 result = cursor.fetchone()
                 
                 return {
@@ -167,3 +185,29 @@ class GLPIConnector:
         except Exception as e:
             print(f"Error al obtener resumen: {e}")
             return {}
+
+    def _is_safe_select_query(self, sql: str) -> bool:
+        """Valida que la consulta SQL sea una lectura segura de solo SELECT."""
+        sql_lower = sql.strip().lower()
+        if not sql_lower.startswith("select"):
+            return False
+        if ";" in sql_lower:
+            return False
+        forbidden = ["insert", "update", "delete", "drop", "alter", "create", "truncate", "replace", "grant", "revoke", "commit", "rollback", "use", "lock", "set"]
+        return not any(word in sql_lower for word in forbidden)
+
+    def execute_select_query(self, sql: str, params: tuple = None) -> List[Dict]:
+        """Ejecuta una consulta SELECT segura y devuelve los resultados."""
+        if not self._is_safe_select_query(sql):
+            raise ValueError("SQL no segura o no permitida")
+
+        try:
+            if not self.connection:
+                self.connect()
+
+            with self.connection.cursor() as cursor:
+                cursor.execute(sql, params or ())
+                return cursor.fetchall()
+        except Exception as e:
+            print(f"Error al ejecutar query SQL: {e}")
+            raise
